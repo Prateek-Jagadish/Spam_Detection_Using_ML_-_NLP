@@ -1,7 +1,7 @@
 import streamlit as st
 import pickle
 import re
-import time
+import fitz  # PyMuPDF
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem.wordnet import WordNetLemmatizer
@@ -18,7 +18,6 @@ with open("spam_classifier_model.pkl", "rb") as f:
 with open("tfidf_vectorizer.pkl", "rb") as f:
     vectorizer = pickle.load(f)
 
-# Preprocessing tools
 lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
 
@@ -32,61 +31,78 @@ def clean_text(text):
     tokens = [lemmatizer.lemmatize(t) for t in tokens]
     return " ".join(tokens)
 
-def ents(text):
+def extract_entities(text):
     doc = nlp(text)
     extracted = {}
     for ent in doc.ents:
-        if ent.label_ in extracted:
-            extracted[ent.label_].append(ent.text)
+        extracted.setdefault(ent.label_, []).append(ent.text)
+    return extracted if extracted else None
+
+def read_pdf(file):
+    try:
+        doc = fitz.open(stream=file.read(), filetype="pdf")
+        return "\n".join(page.get_text() for page in doc)
+    except Exception:
+        return None
+
+# --- UI ---
+st.set_page_config(page_title="Spade - Smart Spam Detector", layout="centered")
+st.title("🛡️ Spade - AI-powered Spam Detection")
+
+st.markdown("**Welcome to Spade!** Upload a message or paste text to detect **spam** and discover key **entities**.")
+
+upload_tab, paste_tab = st.tabs(["📄 Upload File (.pdf/.txt)", "✍️ Paste Text"])
+
+text_input = None
+
+with upload_tab:
+    uploaded_file = st.file_uploader("Upload a PDF or TXT file:", type=["pdf", "txt"])
+    if uploaded_file:
+        if uploaded_file.type == "application/pdf":
+            text_input = read_pdf(uploaded_file)
         else:
-            extracted[ent.label_] = [ent.text]
-    return extracted if extracted else "no"
+            text_input = uploaded_file.read().decode("utf-8")
 
-# Streamlit UI
-st.set_page_config(page_title="Spade", layout="centered")
-st.title("🛡️ Spade - Spam Detector")
+        if not text_input:
+            st.error("❌ Could not extract text from the file.")
+        else:
+            st.success("✅ File uploaded successfully!")
 
-st.write("Welcome to **Spade** - A Spam Detection system using Machine Learning and NLP.")
+with paste_tab:
+    text_input_manual = st.text_area("Type or paste your message here:", height=250)
+    if text_input_manual.strip():
+        text_input = text_input_manual
 
-# Input options
-text_input = st.text_area("✉️ Paste email or SMS text below:", height=300, placeholder="Type your message...")
-
-if st.button("🚀 Detect"):
-    if not text_input or len(text_input.strip()) < 10:
-        st.error("Please enter at least 10 characters.")
-    else:
-        with st.spinner("Analyzing your message..."):
+if text_input:
+    if st.button("🚀 Run Detection"):
+        with st.spinner("🔍 Analyzing message..."):
             cleaned = clean_text(text_input)
             vec = vectorizer.transform([cleaned])
             pred = model.predict(vec)[0]
-            prob = model.predict_proba(vec)[0][1]  # spam probability
+            prob = model.predict_proba(vec)[0][1]
 
             label = "Spam" if pred == 1 else "Ham"
             confidence = f"{prob * 100:.2f}%"
 
-            st.markdown(f"### 🔍 Prediction: **{label}**")
-            st.markdown(f"### 🎯 Spam Confidence: **{confidence}**")
+        st.success(f"### 🔎 Prediction: **{label}**")
+        st.markdown(f"**🎯 Confidence:** {confidence}")
 
-            # Bar plot
-            st.subheader("Spam Probability")
+        tabs = st.tabs(["📊 Spam Probability", "🧠 Named Entities"])
+        with tabs[0]:
+            st.subheader("Probability Distribution")
             fig, ax = plt.subplots()
-            sns.barplot(x=["Ham", "Spam"], y=model.predict_proba(vec)[0], ax=ax, palette="viridis")
-            ax.set_ylabel("Probability")
+            sns.barplot(x=["Ham", "Spam"], y=model.predict_proba(vec)[0], ax=ax, palette="coolwarm")
             ax.set_ylim(0, 1)
             st.pyplot(fig)
 
-            # Named Entity Extraction
-            st.subheader("🧠 Named Entity Recognition")
-            entity_dict = ents(text_input)
-            if entity_dict == "no":
-                st.write("No entities found.")
-            else:
+        with tabs[1]:
+            st.subheader("Entities Found")
+            entity_dict = extract_entities(text_input)
+            if entity_dict:
                 for label, values in entity_dict.items():
                     with st.expander(f"{label} ({spacy.explain(label)})"):
                         st.write(", ".join(set(values)))
-
-
-
-
-
-#To Run This: streamlit run app.py --logger.level=debug
+            else:
+                st.info("No named entities found.")
+else:
+    st.info("👆 Upload a file or paste your message above.")
